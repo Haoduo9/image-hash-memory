@@ -264,7 +264,7 @@ class TestPluginLlmHooks(unittest.TestCase):
         expected_summary = "This image portrays a crisp black square centered on a pure white background."
         self.assertEqual(updated_rec.get("ai_summary"), expected_summary)
 
-        # 4. A subsequent turn with the same image should NOT overwrite the existing summary
+        # 4. A subsequent turn with the same image should stack the new description onto existing summary
         secondary_reply = "Overwriting attempt summary."
         post_llm_call(
             user_message=f"[Image attached at: {self.img_a_path}]",
@@ -272,7 +272,8 @@ class TestPluginLlmHooks(unittest.TestCase):
             session_id="session-2",
         )
         persisted_rec = self.store.get_by_id(rec["id"])
-        self.assertEqual(persisted_rec.get("ai_summary"), expected_summary)
+        expected_stacked = f"{expected_summary}；Overwriting attempt summary."
+        self.assertEqual(persisted_rec.get("ai_summary"), expected_stacked)
 
     def test_post_llm_call_truncation(self):
         """post_llm_call truncates long responses to 200 characters max."""

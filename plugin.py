@@ -324,7 +324,8 @@ def pre_llm_call(
 
         for img_path in images:
             try:
-                matches = mem_store.find_similar(img_path, threshold=8)
+                # Use Hamming distance <= 25 threshold for visual memory matching
+                matches = mem_store.find_similar(img_path, threshold=25)
             except Exception as match_err:
                 logger.warning("Error searching similar images for %s: %s", img_path, match_err)
                 matches = []
@@ -344,47 +345,21 @@ def pre_llm_call(
                     or "暂无记录"
                 )
 
-                # Record/update hit in storage
-                updated_record = None
-                if best_match.get("exact_match") or d == 0:
-                    try:
-                        updated_record = mem_store.record_image(
-                            img_path,
-                            session_id=session_id,
-                            platform=platform,
+                # Within threshold <= 25: DO NOT insert new record, update existing record's hits and last_seen
+                now_iso = datetime.now(timezone.utc).isoformat()
+                try:
+                    with mem_store._lock:
+                        mem_store.conn.execute(
+                            "UPDATE images SET hit_count = hit_count + 1, last_seen_at = ? WHERE id = ?",
+                            (now_iso, best_match["id"]),
                         )
-                    except Exception as rec_err:
-                        logger.warning("Error updating exact image hit: %s", rec_err)
-                else:
-                    # Near-identical or similar variant
-                    try:
-                        now_iso = datetime.now(timezone.utc).isoformat()
-                        with mem_store._lock:
-                            mem_store.conn.execute(
-                                "UPDATE images SET hit_count = hit_count + 1, last_seen_at = ? WHERE id = ?",
-                                (now_iso, best_match["id"]),
-                            )
-                            if getattr(mem_store, "auto_commit", True):
-                                mem_store.conn.commit()
-                    except Exception as hit_err:
-                        logger.warning("Error incrementing hit count on match: %s", hit_err)
+                        if getattr(mem_store, "auto_commit", True):
+                            mem_store.conn.commit()
+                except Exception as hit_err:
+                    logger.warning("Error incrementing hit count on match: %s", hit_err)
 
-                    try:
-                        # Also record the new image variation
-                        mem_store.record_image(
-                            img_path,
-                            session_id=session_id,
-                            platform=platform,
-                        )
-                    except Exception as rec_err:
-                        logger.warning("Error recording similar variant: %s", rec_err)
-
-                # Calculate cumulative sent count
-                if updated_record:
-                    count = updated_record.get("seen_count") or updated_record.get("hit_count") or 1
-                else:
-                    prev_count = best_match.get("seen_count") or best_match.get("hit_count") or 1
-                    count = prev_count + 1
+                prev_count = best_match.get("seen_count") or best_match.get("hit_count") or 1
+                count = prev_count + 1
 
                 injection_line = (
                     f"[视觉记忆库命中: 该图片与历史图片高度相似（汉明距离 {d}，"
@@ -393,10 +368,11 @@ def pre_llm_call(
                 )
                 injections.append(injection_line)
             else:
-                # No match found: Save as new record via storage.record_image()
+                # No match found within threshold 25: Save as new record via storage.record_image()
                 try:
                     mem_store.record_image(
                         img_path,
+                        threshold=25,
                         session_id=session_id,
                         platform=platform,
                     )
@@ -447,18 +423,18 @@ def post_llm_call(
 
         for img_path in images:
             try:
-                matches = mem_store.find_similar(img_path, threshold=8)
+                # Find matching original image within threshold <= 25
+                matches = mem_store.find_similar(img_path, threshold=25)
                 if matches:
                     rec = matches[0]
-                    existing_summary = rec.get("ai_summary") or rec.get("summary")
-                    # Only backfill when existing summary is empty or whitespace
-                    if not existing_summary or not str(existing_summary).strip():
-                        mem_store.update_summary(rec["id"], summary=summary)
+                    # Append new summary onto existing descriptions in original image
+                    mem_store.update_summary(rec["id"], summary=summary, append=True)
                 else:
                     # If not recorded yet, record image with summary
                     mem_store.record_image(
                         img_path,
                         summary=summary,
+                        threshold=25,
                         session_id=session_id,
                         platform=platform,
                     )

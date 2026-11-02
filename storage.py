@@ -298,26 +298,57 @@ class ImageMemoryStore:
 
         now = _current_timestamp()
 
+        # Check for existing identical or similar image within threshold
         with self._lock:
-            # Check for existing identical image (dhash distance == 0)
+            existing = None
+            # 1. First check exact dhash match
             cur = self.conn.execute(
                 "SELECT * FROM images WHERE dhash = ? ORDER BY id ASC LIMIT 1",
                 (dhash,),
             )
             existing = cur.fetchone()
 
+            # 2. If not exact match and threshold > 0, check similar records within threshold
+            if existing is None and threshold > 0:
+                candidates = self.find_similar(dhash, threshold=threshold, limit=1)
+                if candidates:
+                    match_id = candidates[0]["id"]
+                    cur = self.conn.execute(
+                        "SELECT * FROM images WHERE id = ?",
+                        (match_id,),
+                    )
+                    existing = cur.fetchone()
+
             if existing is not None:
                 # Existing record found: increment hit_count, update last_seen_at
                 update_clauses = ["hit_count = hit_count + 1", "last_seen_at = ?"]
                 params: List[Any] = [now]
 
-                if summary is not None:
+                if summary is not None and str(summary).strip():
+                    clean_s = str(summary).strip()
+                    existing_s = str(existing["summary"] or "").strip()
+                    if not existing_s:
+                        merged_s = clean_s
+                    elif clean_s in existing_s:
+                        merged_s = existing_s
+                    elif existing_s in clean_s:
+                        merged_s = clean_s
+                    else:
+                        merged_s = f"{existing_s}；{clean_s}"
                     update_clauses.append("summary = ?")
-                    params.append(summary)
+                    params.append(merged_s)
 
-                if user_text is not None:
+                if user_text is not None and str(user_text).strip():
+                    clean_u = str(user_text).strip()
+                    existing_u = str(existing["user_text"] or "").strip()
+                    if not existing_u:
+                        merged_u = clean_u
+                    elif clean_u in existing_u:
+                        merged_u = existing_u
+                    else:
+                        merged_u = f"{existing_u}；{clean_u}"
                     update_clauses.append("user_text = ?")
-                    params.append(user_text)
+                    params.append(merged_u)
 
                 if session_id is not None:
                     update_clauses.append("session_id = ?")
@@ -554,9 +585,11 @@ class ImageMemoryStore:
         user_text: Optional[str] = None,
         ai_summary: Optional[str] = None,
         user_caption: Optional[str] = None,
+        append: bool = True,
     ) -> bool:
         """
         Update the summary and/or user text for a specific image record.
+        If append=True, stacks the new summary/user_text onto existing descriptions separated by '；'.
         Returns True if the record was updated, False if the record ID does not exist.
         """
         if summary is None and ai_summary is not None:
@@ -568,20 +601,43 @@ class ImageMemoryStore:
             return False
 
         now = _current_timestamp()
-        update_clauses = ["last_seen_at = ?"]
-        params: List[Any] = [now]
-
-        if summary is not None:
-            update_clauses.append("summary = ?")
-            params.append(summary)
-        if user_text is not None:
-            update_clauses.append("user_text = ?")
-            params.append(user_text)
-
-        params.append(record_id)
-        sql = f"UPDATE images SET {', '.join(update_clauses)} WHERE id = ?"
-
         with self._lock:
+            cur = self.conn.execute("SELECT * FROM images WHERE id = ?", (record_id,))
+            existing = cur.fetchone()
+            if existing is None:
+                return False
+
+            update_clauses = ["last_seen_at = ?"]
+            params: List[Any] = [now]
+
+            if summary is not None and str(summary).strip():
+                clean_s = str(summary).strip()
+                existing_s = str(existing["summary"] or "").strip()
+                if not append or not existing_s:
+                    merged_s = clean_s
+                elif clean_s in existing_s:
+                    merged_s = existing_s
+                elif existing_s in clean_s:
+                    merged_s = clean_s
+                else:
+                    merged_s = f"{existing_s}；{clean_s}"
+                update_clauses.append("summary = ?")
+                params.append(merged_s)
+
+            if user_text is not None and str(user_text).strip():
+                clean_u = str(user_text).strip()
+                existing_u = str(existing["user_text"] or "").strip()
+                if not append or not existing_u:
+                    merged_u = clean_u
+                elif clean_u in existing_u:
+                    merged_u = existing_u
+                else:
+                    merged_u = f"{existing_u}；{clean_u}"
+                update_clauses.append("user_text = ?")
+                params.append(merged_u)
+
+            params.append(record_id)
+            sql = f"UPDATE images SET {', '.join(update_clauses)} WHERE id = ?"
             cur = self.conn.execute(sql, params)
             if self.auto_commit:
                 self.conn.commit()
@@ -789,7 +845,7 @@ class TestImageMemoryStore(unittest.TestCase):
         self.assertEqual(rec1["hit_count"], 1)
         t1_first = rec1["first_seen_at"]
 
-        # Record identical image again with updated summary
+        # Record identical image again with updated summary (descriptions are stacked)
         rec2 = self.store.record_image(
             self.img1,
             user_text="Updated description",
@@ -798,14 +854,14 @@ class TestImageMemoryStore(unittest.TestCase):
         self.assertEqual(rec2["id"], rec1["id"])
         self.assertEqual(rec2["hit_count"], 2)
         self.assertEqual(rec2["first_seen_at"], t1_first)
-        self.assertEqual(rec2["user_text"], "Updated description")
-        self.assertEqual(rec2["summary"], "Updated summary")
+        self.assertEqual(rec2["user_text"], "First description；Updated description")
+        self.assertEqual(rec2["summary"], "First summary；Updated summary")
 
-        # Record third time with no summary provided (should preserve existing summary)
+        # Record third time with no summary provided (should preserve existing stacked summary)
         rec3 = self.store.record_image(self.img1)
         self.assertEqual(rec3["hit_count"], 3)
-        self.assertEqual(rec3["summary"], "Updated summary")
-        self.assertEqual(rec3["user_text"], "Updated description")
+        self.assertEqual(rec3["summary"], "First summary；Updated summary")
+        self.assertEqual(rec3["user_text"], "First description；Updated description")
 
         # Verify stats reflect 1 image and 3 total hits
         stats = self.store.get_stats()
@@ -921,6 +977,7 @@ class TestImageMemoryStore(unittest.TestCase):
             rec_id,
             summary="Refined summary by Hermes AI",
             user_text="User added text later",
+            append=False,
         )
         self.assertTrue(success)
 
