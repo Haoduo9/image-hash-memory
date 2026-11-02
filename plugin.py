@@ -308,10 +308,12 @@ def pre_llm_call(
     - Returns {"context": injection_text} if matches found, otherwise None.
     """
     try:
-        # Extract images from user_message; fall back to conversation_history if absent
+        # Extract images from user_message; fall back ONLY to the latest message in conversation_history
         images = extract_images(user_message)
         if not images and conversation_history:
-            images = extract_images(conversation_history)
+            # Check only the last turn message, NEVER scan previous historical turns
+            latest_turn_msg = conversation_history[-1]
+            images = extract_images(latest_turn_msg)
 
         if not images:
             return None
@@ -431,7 +433,8 @@ def post_llm_call(
     try:
         images = extract_images(user_message)
         if not images and conversation_history:
-            images = extract_images(conversation_history)
+            latest_turn_msg = conversation_history[-1]
+            images = extract_images(latest_turn_msg)
 
         if not images or not assistant_response:
             return
