@@ -308,12 +308,13 @@ def pre_llm_call(
     - Returns {"context": injection_text} if matches found, otherwise None.
     """
     try:
-        # Extract images from user_message; fall back ONLY to the latest message in conversation_history
-        images = extract_images(user_message)
-        if not images and conversation_history:
-            # Check only the last turn message, NEVER scan previous historical turns
-            latest_turn_msg = conversation_history[-1]
-            images = extract_images(latest_turn_msg)
+        # Strictly extract images ONLY from the CURRENT turn's user_message!
+        # Never fall back to conversation history when the user sent pure text.
+        images = extract_images(user_message) if user_message is not None else []
+        if not images and user_message is None and conversation_history:
+            last_msg = conversation_history[-1]
+            if isinstance(last_msg, dict) and last_msg.get("role") == "user":
+                images = extract_images(last_msg)
 
         if not images:
             return None
@@ -407,10 +408,11 @@ def post_llm_call(
         and updates empty summary in storage for those images.
     """
     try:
-        images = extract_images(user_message)
-        if not images and conversation_history:
-            latest_turn_msg = conversation_history[-1]
-            images = extract_images(latest_turn_msg)
+        images = extract_images(user_message) if user_message is not None else []
+        if not images and user_message is None and conversation_history:
+            last_msg = conversation_history[-1]
+            if isinstance(last_msg, dict) and last_msg.get("role") == "user":
+                images = extract_images(last_msg)
 
         if not images or not assistant_response:
             return
