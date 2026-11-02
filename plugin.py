@@ -249,10 +249,24 @@ def _extract_summary(response: Any, max_chars: int = 200) -> str:
         return ""
 
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-    first_paragraph = paragraphs[0] if paragraphs else text
-    if len(first_paragraph) > max_chars:
-        return first_paragraph[:max_chars].rstrip()
-    return first_paragraph
+    if not paragraphs:
+        return text[:max_chars].rstrip()
+
+    # If first paragraph is already reasonably informative (>= 40 chars), use it directly
+    first_p = paragraphs[0].replace("\n", " ").strip()
+    if len(first_p) >= 40 or len(paragraphs) == 1:
+        return first_p[:max_chars].rstrip()
+
+    # Otherwise join first two short paragraphs
+    joined: List[str] = [first_p]
+    second_p = paragraphs[1].replace("\n", " ").strip()
+    if second_p:
+        joined.append(second_p)
+
+    summary = "；".join(joined)
+    if len(summary) > max_chars:
+        return summary[:max_chars].rstrip()
+    return summary
 
 
 def register(ctx: Any) -> None:
