@@ -20,6 +20,7 @@ import os
 from pathlib import Path
 import re
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
+import yaml
 
 try:
     from storage import (
@@ -56,6 +57,7 @@ __all__ = [
     "post_llm_call",
     "get_store",
     "set_store",
+    "load_config",
     "IMAGE_EXTENSIONS",
 ]
 
@@ -71,20 +73,49 @@ IMAGE_EXTENSIONS: Tuple[str, ...] = (
     ".ico",
 )
 
+CONFIG_PATH = Path(__file__).resolve().parent / "config.yaml"
+
+DEFAULT_CONFIG: Dict[str, Any] = {
+    "hamming_threshold": 25,
+    "enable_phash": True,
+    "phash_threshold": 12,
+    "enable_recall": True,
+    "auto_append_summary": True,
+    "max_summary_length": 200,
+    "db_path": DEFAULT_DB_PATH,
+}
+
+
+def load_config() -> Dict[str, Any]:
+    """Load configuration from config.yaml with fallback to defaults."""
+    cfg = dict(DEFAULT_CONFIG)
+    if CONFIG_PATH.is_file():
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                loaded = yaml.safe_load(f)
+                if isinstance(loaded, dict):
+                    cfg.update(loaded)
+        except Exception as exc:
+            logger.warning("Failed to parse config.yaml, using defaults: %s", exc)
+    if "db_path" in cfg and isinstance(cfg["db_path"], str):
+        cfg["db_path"] = os.path.expanduser(cfg["db_path"])
+    return cfg
+
+
 _GLOBAL_STORE: Optional[ImageMemoryStore] = None
 
 
 def get_store(db_path: Optional[Union[str, os.PathLike]] = None) -> ImageMemoryStore:
     """
     Get or create an ImageMemoryStore instance.
-    Uses db_path if specified; otherwise defaults to HERMES_IMAGE_MEMORY_DB or DEFAULT_DB_PATH.
+    Uses db_path if specified; otherwise defaults to config db_path or DEFAULT_DB_PATH.
     """
     global _GLOBAL_STORE
     if db_path is not None:
         return ImageMemoryStore(db_path=db_path)
     if _GLOBAL_STORE is None:
-        env_path = os.environ.get("HERMES_IMAGE_MEMORY_DB")
-        target_path = env_path if env_path else DEFAULT_DB_PATH
+        cfg = load_config()
+        target_path = cfg.get("db_path") or DEFAULT_DB_PATH
         _GLOBAL_STORE = ImageMemoryStore(db_path=target_path)
     return _GLOBAL_STORE
 
@@ -319,14 +350,29 @@ def pre_llm_call(
         if not images:
             return None
 
+        cfg = load_config()
+        if not cfg.get("enable_recall", True):
+            return None
+
+        h_thresh = int(cfg.get("hamming_threshold", 25))
+        enable_p = bool(cfg.get("enable_phash", True))
+        p_thresh = int(cfg.get("phash_threshold", 12))
+
         mem_store = store if store is not None else get_store()
         matches_found = False
         injections: List[str] = []
 
         for img_path in images:
             try:
-                # Use Hamming distance <= 25 threshold for visual memory matching
-                matches = mem_store.find_similar(img_path, threshold=25)
+                # Find matching candidates using hamming_threshold
+                matches = mem_store.find_similar(img_path, threshold=h_thresh)
+                # If enable_phash is set and no dhash match found, check pHash distance
+                if not matches and enable_p:
+                    candidates = mem_store.find_similar(img_path, threshold=50)
+                    for c in candidates:
+                        if c.get("phash_distance") is not None and c["phash_distance"] <= p_thresh:
+                            matches = [c]
+                            break
             except Exception as match_err:
                 logger.warning("Error searching similar images for %s: %s", img_path, match_err)
                 matches = []
@@ -369,11 +415,11 @@ def pre_llm_call(
                 )
                 injections.append(injection_line)
             else:
-                # No match found within threshold 25: Save as new record via storage.record_image()
+                # No match found within threshold: Save as new record via storage.record_image()
                 try:
                     mem_store.record_image(
                         img_path,
-                        threshold=25,
+                        threshold=h_thresh,
                         session_id=session_id,
                         platform=platform,
                     )
@@ -417,7 +463,12 @@ def post_llm_call(
         if not images or not assistant_response:
             return
 
-        summary = _extract_summary(assistant_response)
+        cfg = load_config()
+        max_len = int(cfg.get("max_summary_length", 200))
+        auto_append = bool(cfg.get("auto_append_summary", True))
+        h_thresh = int(cfg.get("hamming_threshold", 25))
+
+        summary = _extract_summary(assistant_response, max_chars=max_len)
         if not summary:
             return
 
@@ -425,18 +476,18 @@ def post_llm_call(
 
         for img_path in images:
             try:
-                # Find matching original image within threshold <= 25
-                matches = mem_store.find_similar(img_path, threshold=25)
+                # Find matching original image within threshold
+                matches = mem_store.find_similar(img_path, threshold=h_thresh)
                 if matches:
                     rec = matches[0]
-                    # Append new summary onto existing descriptions in original image
-                    mem_store.update_summary(rec["id"], summary=summary, append=True)
+                    # Update or append new summary onto existing descriptions
+                    mem_store.update_summary(rec["id"], summary=summary, append=auto_append)
                 else:
                     # If not recorded yet, record image with summary
                     mem_store.record_image(
                         img_path,
                         summary=summary,
-                        threshold=25,
+                        threshold=h_thresh,
                         session_id=session_id,
                         platform=platform,
                     )

@@ -1,0 +1,21 @@
+# Image Hash Memory 配置文件
+# 修改后即时生效，无需重启
+
+# 感知哈希匹配阈值（默认 25：允许大比例裁切、调色滤镜、微变体归并）
+hamming_threshold: 25
+
+# 是否开启 pHash（离散余弦变换）双保险（抗严重滤镜调色与旋转微调）
+enable_phash: true
+phash_threshold: 12
+
+# 是否开启旧图自动召回与上下文注入
+enable_recall: true
+
+# 是否在新轮次自动将新发现追加/叠加到原图记录中（以“；”间隔）
+auto_append_summary: true
+
+# 单次摘要最大提取长度（字数）
+max_summary_length: 200
+
+# SQLite 数据库持久化存储路径
+db_path: "~/.hermes/data/image_memory.db"
