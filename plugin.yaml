@@ -1,8 +1,11 @@
 name: image-hash-memory
 version: 1.0.0
-description: 'Perceptual Image Hash Memory & Auto-Recall for Hermes'
+description: "Perceptual Image Hash Memory & Auto-Recall for Hermes"
+author: "Haoduo9"
+license: "MIT"
+homepage: "https://github.com/Haoduo9/image-hash-memory"
 pip_dependencies:
-  - 'Pillow>=9.0.0'
+  - "Pillow>=9.0.0"
 provides_hooks:
   - pre_llm_call
   - post_llm_call
