@@ -292,6 +292,63 @@ class TestPluginLlmHooks(unittest.TestCase):
         self.assertEqual(len(summary), 200)
         self.assertEqual(summary, "A" * 200)
 
+    def test_composite_dual_gating_behavior(self):
+        """
+        Verify Scheme B composite dual-gating:
+        Matches only when dHash <= 24 AND pHash <= 12.
+        If dHash <= 24 but pHash > 12, it must NOT match.
+        """
+        cad_entry = {
+            "dhash": "00e0332dec238300",
+            "phash": "ce91a96656e93d90",
+            "summary": "CAD diagram of cart chassis",
+        }
+        self.store.record_image(
+            cad_entry,
+            summary=cad_entry["summary"],
+            threshold=0,
+        )
+
+        # Frieren cosplay image fingerprint vs CAD:
+        # dhash dist = 25 (> 24) and phash dist = 26 (> 12)
+        frieren_fp = {
+            "dhash": "020808cff470d3a1",
+            "phash": "c4b3691da0eb569a",
+        }
+        matches = self.store.find_similar(
+            frieren_fp,
+            threshold=24,
+            phash_threshold=12,
+            require_both=True,
+        )
+        self.assertEqual(len(matches), 0, "Frieren cosplay must NOT match CAD diagram")
+
+        # Case where dhash is within 24, but phash > 12 (different content, accidental gradient collision)
+        fake_fp = {
+            "dhash": "00e0332dec23830f",  # dhash dist 4 (<= 24)
+            "phash": "ffffffffffffffff",  # phash dist > 12
+        }
+        matches_fake = self.store.find_similar(
+            fake_fp,
+            threshold=24,
+            phash_threshold=12,
+            require_both=True,
+        )
+        self.assertEqual(len(matches_fake), 0, "Discrepant phash must be blocked even if dhash is close")
+
+        # Case where both dhash <= 24 and phash <= 12
+        good_fp = {
+            "dhash": "00e0332dec238303",  # dist 2
+            "phash": "ce91a96656e93d93",  # dist 2
+        }
+        matches_good = self.store.find_similar(
+            good_fp,
+            threshold=24,
+            phash_threshold=12,
+            require_both=True,
+        )
+        self.assertEqual(len(matches_good), 1, "Should match when both dhash <= 24 and phash <= 12")
+
     def test_pre_and_post_llm_call_fail_open(self):
         """Both hooks should fail open and never raise exceptions on errors."""
         # pre_llm_call with invalid parameters

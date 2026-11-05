@@ -76,9 +76,10 @@ IMAGE_EXTENSIONS: Tuple[str, ...] = (
 CONFIG_PATH = Path(__file__).resolve().parent / "config.yaml"
 
 DEFAULT_CONFIG: Dict[str, Any] = {
-    "hamming_threshold": 25,
+    "hamming_threshold": 24,
     "enable_phash": True,
     "phash_threshold": 12,
+    "verification_mode": "composite",
     "enable_recall": True,
     "auto_append_summary": True,
     "max_summary_length": 200,
@@ -354,9 +355,11 @@ def pre_llm_call(
         if not cfg.get("enable_recall", True):
             return None
 
-        h_thresh = int(cfg.get("hamming_threshold", 25))
+        h_thresh = int(cfg.get("hamming_threshold", 24))
         enable_p = bool(cfg.get("enable_phash", True))
         p_thresh = int(cfg.get("phash_threshold", 12))
+        mode = cfg.get("verification_mode", "composite")
+        require_both = enable_p and (mode in ("composite", "both"))
 
         mem_store = store if store is not None else get_store()
         matches_found = False
@@ -364,15 +367,13 @@ def pre_llm_call(
 
         for img_path in images:
             try:
-                # Find matching candidates using hamming_threshold
-                matches = mem_store.find_similar(img_path, threshold=h_thresh)
-                # If enable_phash is set and no dhash match found, check pHash distance
-                if not matches and enable_p:
-                    candidates = mem_store.find_similar(img_path, threshold=50)
-                    for c in candidates:
-                        if c.get("phash_distance") is not None and c["phash_distance"] <= p_thresh:
-                            matches = [c]
-                            break
+                # 综合双门禁匹配：dHash <= h_thresh 且 (若开启pHash) pHash <= p_thresh
+                matches = mem_store.find_similar(
+                    img_path,
+                    threshold=h_thresh,
+                    phash_threshold=p_thresh if enable_p else None,
+                    require_both=require_both,
+                )
             except Exception as match_err:
                 logger.warning("Error searching similar images for %s: %s", img_path, match_err)
                 matches = []
@@ -392,7 +393,7 @@ def pre_llm_call(
                     or "暂无记录"
                 )
 
-                # Within threshold <= 25: DO NOT insert new record, update existing record's hits and last_seen
+                # Within threshold: DO NOT insert new record, update existing record's hits and last_seen
                 now_iso = datetime.now(timezone.utc).isoformat()
                 try:
                     with mem_store._lock:
@@ -420,6 +421,8 @@ def pre_llm_call(
                     mem_store.record_image(
                         img_path,
                         threshold=h_thresh,
+                        phash_threshold=p_thresh if enable_p else None,
+                        require_both=require_both,
                         session_id=session_id,
                         platform=platform,
                     )
@@ -466,7 +469,11 @@ def post_llm_call(
         cfg = load_config()
         max_len = int(cfg.get("max_summary_length", 200))
         auto_append = bool(cfg.get("auto_append_summary", True))
-        h_thresh = int(cfg.get("hamming_threshold", 25))
+        h_thresh = int(cfg.get("hamming_threshold", 24))
+        enable_p = bool(cfg.get("enable_phash", True))
+        p_thresh = int(cfg.get("phash_threshold", 12))
+        mode = cfg.get("verification_mode", "composite")
+        require_both = enable_p and (mode in ("composite", "both"))
 
         summary = _extract_summary(assistant_response, max_chars=max_len)
         if not summary:
@@ -476,8 +483,13 @@ def post_llm_call(
 
         for img_path in images:
             try:
-                # Find matching original image within threshold
-                matches = mem_store.find_similar(img_path, threshold=h_thresh)
+                # Find matching original image within composite threshold
+                matches = mem_store.find_similar(
+                    img_path,
+                    threshold=h_thresh,
+                    phash_threshold=p_thresh if enable_p else None,
+                    require_both=require_both,
+                )
                 if matches:
                     rec = matches[0]
                     # Update or append new summary onto existing descriptions
@@ -488,6 +500,8 @@ def post_llm_call(
                         img_path,
                         summary=summary,
                         threshold=h_thresh,
+                        phash_threshold=p_thresh if enable_p else None,
+                        require_both=require_both,
                         session_id=session_id,
                         platform=platform,
                     )

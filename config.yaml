@@ -1,12 +1,15 @@
 # Image Hash Memory 配置文件
 # 修改后即时生效，无需重启
 
-# 感知哈希匹配阈值（默认 25：允许大比例裁切、调色滤镜、微变体归并）
-hamming_threshold: 25
+# 感知哈希匹配阈值（dHash 汉明距离上限：默认 24）
+hamming_threshold: 24
 
-# 是否开启 pHash（离散余弦变换）双保险（抗严重滤镜调色与旋转微调）
+# 是否开启 pHash（离散余弦变换）综合门禁双保险
 enable_phash: true
 phash_threshold: 12
+
+# 校验模式：composite（综合门禁：dHash <= 24 且 pHash <= 12 双门禁全部满足才放行）
+verification_mode: composite
 
 # 是否开启旧图自动召回与上下文注入
 enable_recall: true

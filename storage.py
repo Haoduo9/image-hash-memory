@@ -222,6 +222,8 @@ class ImageMemoryStore:
         platform: Optional[str] = None,
         file_path: Optional[str] = None,
         threshold: int = 0,
+        phash_threshold: Optional[int] = None,
+        require_both: bool = False,
         *,
         user_caption: Optional[str] = None,
         ai_summary: Optional[str] = None,
@@ -310,7 +312,14 @@ class ImageMemoryStore:
 
             # 2. If not exact match and threshold > 0, check similar records within threshold
             if existing is None and threshold > 0:
-                candidates = self.find_similar(dhash, threshold=threshold, limit=1)
+                query_target: Union[Dict[str, Any], str] = {"dhash": dhash, "phash": phash} if phash else dhash
+                candidates = self.find_similar(
+                    query_target,
+                    threshold=threshold,
+                    limit=1,
+                    phash_threshold=phash_threshold,
+                    require_both=require_both,
+                )
                 if candidates:
                     match_id = candidates[0]["id"]
                     cur = self.conn.execute(
@@ -444,6 +453,8 @@ class ImageMemoryStore:
         image_or_hash: Union[str, os.PathLike, Image.Image, io.BytesIO, bytes, Dict[str, Any]],
         threshold: int = 8,
         limit: Optional[int] = 10,
+        phash_threshold: Optional[int] = None,
+        require_both: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Search visual memory for matching or similar images.
@@ -492,7 +503,7 @@ class ImageMemoryStore:
                             ORDER BY _calc_dist ASC
                         """
                         params = [query_dhash, query_dhash, threshold]
-                        if limit is not None and not query_phash:
+                        if limit is not None and not query_phash and not require_both:
                             sql += " LIMIT ?"
                             params.append(limit)
                         rows = self.conn.execute(sql, params).fetchall()
@@ -503,7 +514,7 @@ class ImageMemoryStore:
                             ORDER BY _calc_dist ASC
                         """
                         params = [query_dhash]
-                        if limit is not None and not query_phash:
+                        if limit is not None and not query_phash and not require_both:
                             sql += " LIMIT ?"
                             params.append(limit)
                         rows = self.conn.execute(sql, params).fetchall()
@@ -541,6 +552,12 @@ class ImageMemoryStore:
                     dist_p = hamming_distance(cand_phash, query_phash)
                 except Exception:
                     dist_p = None
+
+            # Composite verification: if require_both is True and both phashes exist,
+            # enforce phash_threshold as a strict gatekeeper
+            if require_both and phash_threshold is not None:
+                if dist_p is not None and dist_p > phash_threshold:
+                    continue
 
             score = similarity_score(cand_dhash, query_dhash)
             is_exact = (dist_d == 0)
