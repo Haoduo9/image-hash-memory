@@ -1,5 +1,5 @@
 name: image-hash-memory
-version: 1.0.0
+version: 2.0.0
 description: "Perceptual Image Hash Memory & Auto-Recall for Hermes"
 author: "Haoduo9"
 license: "MIT"
